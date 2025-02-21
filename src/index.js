@@ -1,49 +1,68 @@
-import fs from "node:fs/promises";
-import path from "node:path";
-import request from "./request.js";
-import { TOP_CODE, OUTPUT_DIR, OUTPUT_PROVINCE_DIR } from "./config.js";
-import { sleep, refreshDir } from "./utils.js";
+import pLimit from 'p-limit';
+import { OUTPUT_DIR, TOP_CODE } from './config.js';
+import { downloadAndSaveFile, refreshDir, sleep, log } from './utils.js';
 
-function getProvinceConfig(json) {
+export function filter(json, level) {
+  if (!json || !json.features) return [];
   return json.features
-    .filter((e) => e.properties.level === "province")
+    .filter((e) => !level || e.properties.level === level)
     .map((e) => ({
       name: e.properties.name,
       code: e.properties.adcode,
     }));
 }
 
-async function downloadAndSaveFile(code, dir) {
-  const name = `${code}_full.json`;
-  const { data } = await request.get(name);
-  await fs.writeFile(path.join(dir, name), JSON.stringify(data));
-  return data;
+export async function pull({ code, name }, retries = 3) {
+  let lastError;
+  for (let i = 0; i < retries; i++) {
+    try {
+      await sleep(100 * (i + 1));
+      log(`${code} ${name} (attempt ${i + 1}/${retries})`);
+      return await downloadAndSaveFile(code, OUTPUT_DIR);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  log(`${code} ${name} failed: ${lastError.message}`);
+  return null;
 }
 
-export async function main() {
-  await refreshDir(OUTPUT_DIR);
-  const json = await downloadAndSaveFile(TOP_CODE, OUTPUT_DIR);
-  const config = getProvinceConfig(json);
-
-  await refreshDir(OUTPUT_PROVINCE_DIR);
-  console.log(`province length: ${config.length},`, config);
-  console.log(` - start downloading`);
-
-  let successCount = 0;
-  let failureCount = 0;
-
-  for (let { code, name } of config) {
-    console.log(`downloading ${code} ${name}`);
-    try {
-      await downloadAndSaveFile(code, OUTPUT_PROVINCE_DIR);
-      console.log(`succeed`);
-      successCount++;
-    } catch (e) {
-      console.error(`failed,`, e.message);
-      failureCount++;
-    }
-    await sleep(100);
+export async function main(depth = 3) {
+  if (!Number.isInteger(depth) || depth < 1 || depth > 3) {
+    throw new Error('depth must be 1, 2 or 3');
   }
 
-  console.log(` - done: ${successCount} success, ${failureCount} failures`);
+  log(` ------------------------------------- `);
+
+  await refreshDir(OUTPUT_DIR);
+  const levelList = ['', 'province', 'city'];
+  let currentDepth = 1;
+  const limit = pLimit(3); // 限制并行数避免 DDos 风控
+
+  const stack = [[{ code: TOP_CODE, name: 'china' }]];
+
+  while (stack.length) {
+    const currentLevel = stack.pop();
+    const promises = currentLevel.map(({ code, name }) =>
+      limit(async () => {
+        const json = await pull({ code, name });
+
+        if (currentDepth === depth) return;
+
+        const nextLevel = levelList[currentDepth];
+        if (nextLevel && json) {
+          const nextItems = filter(json, nextLevel);
+          if (nextItems.length) {
+            stack.push(nextItems);
+          }
+        }
+      })
+    );
+
+    await Promise.all(promises);
+
+    if (currentDepth < depth) {
+      currentDepth++;
+    }
+  }
 }

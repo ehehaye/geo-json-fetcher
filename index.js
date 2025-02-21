@@ -1,3 +1,3 @@
-import { main } from "./src/index.js";
+import { main } from './src/index.js';
 
-main();
+main(+process.argv[2]);
