@@ -16,6 +16,9 @@ pnpm i
 |----------|--------|------|
 | BASE_URL | <https://geo.datav.aliyun.com/areas_v3/bound> | 数据源地址 |
 | TOP_CODE | 100000 | 国家行政代码 |
+| REQ_RETRIES | 3 | 请求失败重试次数 |
+| REQ_INTERVAL | 200 | 请求间隔毫秒 |
+| REQ_CONCURRENCY | 3 | 并发请求数 |
 
 ## 示例
 

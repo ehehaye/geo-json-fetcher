@@ -1,10 +1,10 @@
-import pLimit from 'p-limit';
-import { OUTPUT_DIR, TOP_CODE } from './config.js';
-import { downloadAndSaveFile, refreshDir, sleep, log } from './utils.js';
+import pl from 'p-limit';
+import config from './config.js';
+import { log, pull, refreshDir, saveJson } from './utils.js';
 
-export function filter(json, level) {
-  if (!json || !json.features) return [];
-  return json.features
+export function filterFeatures(geoJson, level) {
+  if (!geoJson || !geoJson.features) return [];
+  return geoJson.features
     .filter((e) => !level || e.properties.level === level)
     .map((e) => ({
       name: e.properties.name,
@@ -12,57 +12,58 @@ export function filter(json, level) {
     }));
 }
 
-export async function pull({ code, name }, retries = 3) {
-  let lastError;
-  for (let i = 0; i < retries; i++) {
-    try {
-      await sleep(100 * (i + 1));
-      log(`${code} ${name} (attempt ${i + 1}/${retries})`);
-      return await downloadAndSaveFile(code, OUTPUT_DIR);
-    } catch (error) {
-      lastError = error;
-    }
-  }
-  log(`${code} ${name} failed: ${lastError.message}`);
-  return null;
-}
-
-export async function main(depth = 3) {
+export async function main(depth = 1) {
   if (!Number.isInteger(depth) || depth < 1 || depth > 3) {
     throw new Error('depth must be 1, 2 or 3');
   }
 
-  log(` ------------------------------------- `);
+  log(` ------------------- START ------------------- `);
+  await refreshDir(config.OUTPUT_DIR);
 
-  await refreshDir(OUTPUT_DIR);
-  const levelList = ['', 'province', 'city'];
+  const limit = pl(config.REQ_CONCURRENCY);
+  const LEVEL_LIST = ['', 'province', 'city', 'district'];
+  const hierarchy = { code: config.TOP_CODE, name: 'china', children: [] };
+  const stack = [[{ code: config.TOP_CODE, name: 'china', node: hierarchy }]];
+
   let currentDepth = 1;
-  const limit = pLimit(3); // 限制并行数避免 DDos 风控
-
-  const stack = [[{ code: TOP_CODE, name: 'china' }]];
 
   while (stack.length) {
-    const currentLevel = stack.pop();
-    const promises = currentLevel.map(({ code, name }) =>
+    const curFeature = stack.pop();
+    const tasks = curFeature.map(({ code, name, node }) =>
       limit(async () => {
-        const json = await pull({ code, name });
+        const geoJson = await pull({ code, name });
+        const nextLevel = LEVEL_LIST[currentDepth];
+        if (!geoJson || !nextLevel) return;
 
+        const nextFeatures = filterFeatures(geoJson, nextLevel);
+        if (!nextFeatures.length) return;
+
+        node.children = nextFeatures.map(({ code, name }) => ({
+          code,
+          name,
+          children: [],
+        }));
+
+        // 阿里数据源最深只支持到市级
         if (currentDepth === depth) return;
-
-        const nextLevel = levelList[currentDepth];
-        if (nextLevel && json) {
-          const nextItems = filter(json, nextLevel);
-          if (nextItems.length) {
-            stack.push(nextItems);
-          }
-        }
+        stack.push(
+          nextFeatures.map(({ code, name }) => ({
+            code,
+            name,
+            node: node.children.find((n) => n.code === code && n.name === name),
+          }))
+        );
       })
     );
 
-    await Promise.all(promises);
+    await Promise.all(tasks);
 
     if (currentDepth < depth) {
       currentDepth++;
     }
   }
+
+  saveJson('hierarchy.json', hierarchy);
+
+  log(` ------------------- DONE ------------------- `);
 }
