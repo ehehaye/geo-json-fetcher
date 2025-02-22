@@ -8,14 +8,13 @@ export function sleep(ms) {
 }
 
 export async function log(message) {
-  const logDir = path.join(LOGS_DIR, '..', 'logs');
   const logFilePath = path.join(
-    logDir,
+    LOGS_DIR,
     `${new Date().toISOString().split('T')[0]}.log`
   );
 
   try {
-    await fs.mkdir(logDir, { recursive: true });
+    await fs.mkdir(LOGS_DIR, { recursive: true });
     await fs.appendFile(
       logFilePath,
       `${new Date().toISOString()} - ${message}\n`
